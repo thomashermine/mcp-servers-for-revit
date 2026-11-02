@@ -26,6 +26,13 @@ namespace revit_mcp_plugin.Core
         private ILogger _logger;
         private CommandExecutor _commandExecutor;
 
+        // 每个命令只有一个事件处理器实例（参数、结果、等待信号都是共享的），
+        // 多个客户端并发调用会互相覆盖结果，因此所有命令必须串行执行。
+        // Each command owns a single event handler instance (shared parameters, result
+        // and wait signal), so concurrent clients would overwrite each other's results.
+        // Revit only has one API thread anyway: serialize every command execution.
+        private static readonly object _executionLock = new object();
+
         public static SocketService Instance
         {
             get
@@ -251,7 +258,11 @@ namespace revit_mcp_plugin.Core
                 // Execute command.
                 try
                 {                
-                    object result = command.Execute(request.GetParamsObject(), request.Id);
+                    object result;
+                    lock (_executionLock)
+                    {
+                        result = command.Execute(request.GetParamsObject(), request.Id);
+                    }
 
                     return CreateSuccessResponse(request.Id, result);
                 }
