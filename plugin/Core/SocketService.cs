@@ -207,7 +207,7 @@ namespace revit_mcp_plugin.Core
                     string message = Encoding.UTF8.GetString(buffer, 0, bytesRead);
                     System.Diagnostics.Trace.WriteLine($"收到消息: {message}\nReceived message: {message}");
 
-                    string response = ProcessJsonRPCRequest(message);
+                    string response = ProcessJsonRPCRequest(message, tcpClient);
 
                     // 发送响应
                     // Send response.
@@ -225,7 +225,7 @@ namespace revit_mcp_plugin.Core
             }
         }
 
-        private string ProcessJsonRPCRequest(string requestJson)
+        private string ProcessJsonRPCRequest(string requestJson, TcpClient tcpClient)
         {
             JsonRPCRequest request;
 
@@ -261,6 +261,15 @@ namespace revit_mcp_plugin.Core
                     object result;
                     lock (_executionLock)
                     {
+                        // 排队期间客户端可能已超时并断开，此时不再执行命令
+                        // The client may have timed out and disconnected while queued:
+                        // don't run a command (and possibly modify the model) nobody waits for.
+                        if (IsClientDisconnected(tcpClient))
+                        {
+                            return CreateErrorResponse(request.Id, JsonRPCErrorCodes.InternalError,
+                                "Client disconnected before the command could run");
+                        }
+
                         result = command.Execute(request.GetParamsObject(), request.Id);
                     }
 
@@ -290,6 +299,21 @@ namespace revit_mcp_plugin.Core
                     JsonRPCErrorCodes.InternalError,
                     $"Internal error: {ex.Message}"
                 );
+            }
+        }
+
+        // 对端关闭连接后，套接字可读但没有待读数据
+        // Once the peer has closed the connection, the socket is readable with no data pending.
+        private static bool IsClientDisconnected(TcpClient tcpClient)
+        {
+            try
+            {
+                Socket socket = tcpClient.Client;
+                return socket == null || (socket.Poll(0, SelectMode.SelectRead) && socket.Available == 0);
+            }
+            catch (Exception)
+            {
+                return true;
             }
         }
 
